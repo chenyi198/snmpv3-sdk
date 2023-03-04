@@ -1,11 +1,9 @@
 package io.snmp.sdk.core.support;
 
-import org.snmp4j.SNMP4JSettings;
 import org.snmp4j.TransportStateReference;
 import org.snmp4j.security.SecurityLevel;
 import org.snmp4j.smi.UdpAddress;
 import org.snmp4j.transport.DefaultUdpTransportMapping;
-import org.snmp4j.util.WorkerTask;
 
 import java.io.IOException;
 import java.net.DatagramSocket;
@@ -21,20 +19,24 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
 
 /**
- * 多路复用通信模型实现——1*多路复用器.
+ * 多路复用通信模型实现——n*多路复用器.
  *
  * <p>覆写{@link DefaultUdpTransportMapping}核心方法，转用多路复用NIO模型.</p>
- * <p>在1个多路复用器里轮询所有udp-channel：将所有channel注册到一个多路复用器上，适用于channel链路较小的情况(<1000).</p>
+ * <p>n个多路复用器轮询多个udp-channel：将多个channel均衡地注册到n个多路复用器上.</p>
  *
  * @author ssp
  * @since 1.0
  */
-public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
+public class NioUdpMultiTransportMapping extends DefaultUdpTransportMapping {
 
-    private NioListenThread listenerThread;
+    private NioListenThreadGroup listenerThreadGroup;
+
+    private final int multi;
+    private String nioPoolName = "nio-snmp-multi-transport";
 
     private final InetSocketAddress localBindAddress;
 
@@ -43,19 +45,25 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
      */
     private Map<UdpAddress, DatagramChannel> channelsTable = new ConcurrentHashMap<>();
 
-
-    public NioUdpTransportMapping() throws IOException {
+    public NioUdpMultiTransportMapping() throws IOException {
+        this.multi = 0;
         localBindAddress = new InetSocketAddress(0);
     }
 
-
-    public NioUdpTransportMapping(UdpAddress udpAddress, boolean reuseAddress) throws IOException {
-        super(udpAddress, reuseAddress);
-        localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
+    public NioUdpMultiTransportMapping(int multi) throws IOException {
+        this.multi = multi;
+        localBindAddress = new InetSocketAddress(0);
     }
 
-    public NioUdpTransportMapping(UdpAddress udpAddress) throws IOException {
+    public NioUdpMultiTransportMapping(UdpAddress udpAddress, boolean reuseAddress, int multi) throws IOException {
+        super(udpAddress, reuseAddress);
+        localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
+        this.multi = multi;
+    }
+
+    public NioUdpMultiTransportMapping(int multi, UdpAddress udpAddress) throws IOException {
         super(udpAddress);
+        this.multi = multi;
         localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
     }
 
@@ -64,11 +72,7 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
         if (listener != null) {
             throw new SocketException("Port already listening");
         }
-        listenerThread = new NioListenThread();
-
-        listener = SNMP4JSettings.getThreadFactory().createWorkerThread(
-                "nio-snmp-single-transport", listenerThread, true);
-        listener.run();
+        listenerThreadGroup = new NioListenThreadGroup(multi == 0 ? Runtime.getRuntime().availableProcessors() * 2 : multi, nioPoolName);
     }
 
     @Override
@@ -99,7 +103,7 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
                         udpAddress.getInetAddress().getHostAddress(),
                         udpAddress.getPort()));
 
-                listenerThread.register(datagramChannel);
+                listenerThreadGroup.register(datagramChannel);
 
                 return datagramChannel;
             } catch (IOException e) {
@@ -109,7 +113,7 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
         });
     }
 
-    class NioListenThread implements WorkerTask {
+    class NioListenThread extends Thread {
 
         private final Selector selector;
 
@@ -120,7 +124,8 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
         private final ReentrantLock putLock = new ReentrantLock();
 
 
-        public NioListenThread() throws IOException {
+        public NioListenThread(String threadName) throws IOException {
+            super(threadName);
             selector = Selector.open();
         }
 
@@ -148,7 +153,7 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
 
                             final InetSocketAddress localAddress = (InetSocketAddress) (sc.getLocalAddress());
                             TransportStateReference stateReference =
-                                    new TransportStateReference(NioUdpTransportMapping.this, new UdpAddress(localAddress.getAddress(), localAddress.getPort()), null,
+                                    new TransportStateReference(NioUdpMultiTransportMapping.this, new UdpAddress(localAddress.getAddress(), localAddress.getPort()), null,
                                             SecurityLevel.undefined, SecurityLevel.undefined,
                                             false, socket);
                             fireProcessMessage(new UdpAddress(socket.getInetAddress(),
@@ -174,19 +179,8 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
 
         }
 
-        @Override
         public void terminate() {
             running = false;
-        }
-
-        @Override
-        public void join() throws InterruptedException {
-
-        }
-
-        @Override
-        public void interrupt() {
-            terminate();
         }
 
         public void register(DatagramChannel datagramChannel) {
@@ -207,4 +201,48 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
         }
 
     }
+
+    class NioListenThreadGroup {
+
+        private final NioListenThread[] threadPool;
+
+        private final int multi;
+
+        private final String poolName;
+
+        private final AtomicInteger tId = new AtomicInteger();
+
+        public NioListenThreadGroup(int multi, String poolName) throws IOException {
+            this.multi = multi;
+            this.threadPool = new NioListenThread[multi];
+            this.poolName = poolName;
+            createPool();
+        }
+
+        private void createPool() throws IOException {
+            for (int i = 0; i < multi; i++) {
+                final NioListenThread thread = new NioListenThread(generateTName());
+                threadPool[i] = thread;
+                thread.start();
+            }
+        }
+
+        private String generateTName() {
+            return poolName + "-" + tId.getAndIncrement();
+        }
+
+        public void register(DatagramChannel datagramChannel) {
+            final NioListenThread nextThread = next();
+            nextThread.register(datagramChannel);
+        }
+
+        /*均衡注册channel*/
+        private final AtomicInteger nextIdx = new AtomicInteger();
+
+        private NioListenThread next() {
+            return threadPool[Math.abs(nextIdx.getAndIncrement() % multi)];
+        }
+
+    }
+
 }

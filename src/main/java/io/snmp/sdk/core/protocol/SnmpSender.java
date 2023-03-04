@@ -2,6 +2,7 @@ package io.snmp.sdk.core.protocol;
 
 import io.snmp.sdk.core.support.Assert;
 import io.snmp.sdk.core.support.JdkThreadPool;
+import io.snmp.sdk.core.support.NioUdpMultiTransportMapping;
 import io.snmp.sdk.core.support.NioUdpTransportMapping;
 import io.snmp.sdk.core.support.exception.SnmpRequestTimeoutException;
 import io.snmp.sdk.core.support.exception.SnmpRuntimeException;
@@ -70,7 +71,9 @@ public class SnmpSender extends SnmpV3Base {
 
     private final int listenPort;
 
-    private final WorkerPool workerPool;
+    private IoStrategy ioStrategy;
+    private int multi;
+
 
     /*---udp请求控制---*/
     private int reqTimeoutMills;
@@ -81,9 +84,9 @@ public class SnmpSender extends SnmpV3Base {
     private int maxRepetitions;
 
     /**
-     * nio模式.
+     * snmp-recv数据后置解码及异步任务线程池.
      */
-    private boolean nioEnable = true;
+    private final WorkerPool workerPool;
     /**
      * address-target的映射表.
      *
@@ -99,13 +102,16 @@ public class SnmpSender extends SnmpV3Base {
         this.bindIp = builder.bindIp;
         this.listenPort = builder.listenPort;
 
+        ioStrategy = builder.ioStrategy;
+        multi = builder.multi;
+
         this.reqTimeoutMills = builder.reqTimeoutMills;
         this.retry = builder.retry;
         this.nonRepeaters = builder.nonRepeaters;
         this.maxRepetitions = builder.maxRepetitions;
 
         this.workerPool = new JdkThreadPool(builder.workerPoolConfig);
-        this.nioEnable = builder.nioEnable;
+
 
         this.localAddress = (UdpAddress) GenericAddress.parse("udp:" + bindIp + "/" + listenPort);
         this.targetTable = new ConcurrentHashMap<>();
@@ -114,23 +120,33 @@ public class SnmpSender extends SnmpV3Base {
         registerUsmUser(builder.usmUser);
     }
 
+    private UdpTransportMapping transport;
+    ;
+
     private void init0() {
 
         try {
-            UdpTransportMapping transport;
-            if (nioEnable) {
-                transport = new NioUdpTransportMapping(localAddress);
-            } else {
-                transport = new DefaultUdpTransportMapping(localAddress);
+            switch (ioStrategy) {
+                case SINGLE_LISTEN:
+                    transport = new DefaultUdpTransportMapping(localAddress);
+                    break;
+                case NIO:
+                    transport = new NioUdpTransportMapping(localAddress);
+                    break;
+                case NIO_MULTI:
+                    transport = new NioUdpMultiTransportMapping(multi, localAddress);
+                    break;
+                default:
+                    throw new SnmpRuntimeException("args error: 'ioStrategy'.");
             }
 
-            transport.listen(); //拉起listener线程监听端口收包.
+            transport.listen(); //拉起listener线程.
 
             snmp = new Snmp(transport);
 
             final MessageDispatcher origMessageDispatcher = snmp.getMessageDispatcher();
 
-            snmp.setMessageDispatcher(new MultiThreadedMessageDispatcher(workerPool, origMessageDispatcher)); //后置response-pdu包处理线程池，主要任务：执行ResponseListener回调
+            snmp.setMessageDispatcher(new MultiThreadedMessageDispatcher(workerPool, origMessageDispatcher)); //workerPool-后置response-pdu包处理线程池，主要任务：snmp解码、执行ResponseListener回调
 
         } catch (Exception e) {
             log.error("snmp init exception!", e);
@@ -310,7 +326,6 @@ public class SnmpSender extends SnmpV3Base {
     }
 
     private UsmUser getUsmUserFromUsmTable(String targetAddress) {
-        //TODO IP段匹配
         final UsmUser usmUser = SnmpSender.targetUsmUserTable.get(targetAddress);
         if (usmUser == null) {
             throw new UsmUserNotRegisterException(
@@ -354,6 +369,15 @@ public class SnmpSender extends SnmpV3Base {
         private String bindIp = "0.0.0.0";
         private int listenPort = 0;
 
+        /**
+         * ---io模型---
+         */
+        private IoStrategy ioStrategy;
+        /**
+         * {@link IoStrategy#NIO_MULTI}下有效.
+         */
+        private int multi = 0;
+
         /*---udp请求控制---*/
         private int reqTimeoutMills = 3000;
         private int retry = 0;
@@ -366,10 +390,6 @@ public class SnmpSender extends SnmpV3Base {
 
         private List<UsmUserEntry> usmUser;
 
-        /**
-         * 是否启用nio模式,默认true.
-         */
-        private boolean nioEnable = true;
 
         public static SnmpSenderBuilder newBuilder() {
             return new SnmpSenderBuilder();
@@ -382,6 +402,16 @@ public class SnmpSender extends SnmpV3Base {
 
         public SnmpSenderBuilder listenPort(int listenPort) {
             this.listenPort = listenPort;
+            return this;
+        }
+
+        public SnmpSenderBuilder ioStrategy(IoStrategy ioStrategy) {
+            this.ioStrategy = ioStrategy;
+            return this;
+        }
+
+        public SnmpSenderBuilder multi(int multi) {
+            this.multi = multi;
             return this;
         }
 
@@ -421,10 +451,6 @@ public class SnmpSender extends SnmpV3Base {
             return this;
         }
 
-        public SnmpSenderBuilder nio(boolean nioEnable) {
-            this.nioEnable = nioEnable;
-            return this;
-        }
 
         public SnmpSender build() {
             return new SnmpSender(this);

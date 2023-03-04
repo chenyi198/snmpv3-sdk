@@ -1,12 +1,16 @@
 package io.snmp.sdk.core.protocol;
 
 import io.snmp.sdk.core.support.UsmEncryptionEnum;
+import lombok.AllArgsConstructor;
 import lombok.Data;
+import lombok.NoArgsConstructor;
 
 /**
  * snmpV3 usm认证信息封装.
  */
 @Data
+@NoArgsConstructor
+@AllArgsConstructor
 public class UsmUserEntry {
 
     /**
@@ -33,5 +37,7 @@ public class UsmUserEntry {
      * snmp服务privacy加密密钥.
      */
     private String privacyPass;
+
+
 
 }
