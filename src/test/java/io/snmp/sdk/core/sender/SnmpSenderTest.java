@@ -1,4 +1,4 @@
-package io.snmp.sdk.core.protocol;
+package io.snmp.sdk.core.sender;
 
 import io.snmp.sdk.core.support.UsmEncryptionEnum;
 import io.snmp.sdk.core.support.exception.SnmpRequestTimeoutException;

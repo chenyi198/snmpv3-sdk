@@ -1,4 +1,4 @@
-package io.snmp.sdk.core.protocol;
+package io.snmp.sdk.core.sender;
 
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;

@@ -1,4 +1,4 @@
-package io.snmp.sdk.core.support;
+package io.snmp.sdk.core.sender.transport;
 
 import org.snmp4j.SNMP4JSettings;
 import org.snmp4j.TransportStateReference;

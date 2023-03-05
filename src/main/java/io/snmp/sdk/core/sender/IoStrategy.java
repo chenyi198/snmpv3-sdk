@@ -1,8 +1,10 @@
-package io.snmp.sdk.core.protocol;
+package io.snmp.sdk.core.sender;
+
+import io.snmp.sdk.core.sender.transport.NioUdpMultiTransportMapping;
+import io.snmp.sdk.core.sender.transport.NioUdpTransportMapping;
 
 /**
  * SnmpSender器transport-IO模型.
- *
  */
 public enum IoStrategy {
 
@@ -14,13 +16,13 @@ public enum IoStrategy {
     SINGLE_LISTEN,
     /**
      * 单多路复用器NIO模式——单recv线程.
-     * <li>transport对应{@link io.snmp.sdk.core.support.NioUdpTransportMapping}
+     * <li>transport对应{@link NioUdpTransportMapping}
      */
     NIO,
     /**
      * 多个多复用器NIO模式——recv线程组.
      * <li>适用于通信对端个数多，收发数据并发量高的情况.
-     * <li>transport对应{@link io.snmp.sdk.core.support.NioUdpMultiTransportMapping}
+     * <li>transport对应{@link NioUdpMultiTransportMapping}
      */
     NIO_MULTI
 }

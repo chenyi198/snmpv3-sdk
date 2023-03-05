@@ -1,9 +1,9 @@
-package io.snmp.sdk.core.protocol;
+package io.snmp.sdk.core.sender;
 
+import io.snmp.sdk.core.sender.transport.NioUdpMultiTransportMapping;
+import io.snmp.sdk.core.sender.transport.NioUdpTransportMapping;
 import io.snmp.sdk.core.support.Assert;
 import io.snmp.sdk.core.support.JdkThreadPool;
-import io.snmp.sdk.core.support.NioUdpMultiTransportMapping;
-import io.snmp.sdk.core.support.NioUdpTransportMapping;
 import io.snmp.sdk.core.support.exception.SnmpRequestTimeoutException;
 import io.snmp.sdk.core.support.exception.SnmpRuntimeException;
 import io.snmp.sdk.core.support.exception.SnmpSendException;
@@ -121,7 +121,6 @@ public class SnmpSender extends SnmpV3Base {
     }
 
     private UdpTransportMapping transport;
-    ;
 
     private void init0() {
 
@@ -369,10 +368,8 @@ public class SnmpSender extends SnmpV3Base {
         private String bindIp = "0.0.0.0";
         private int listenPort = 0;
 
-        /**
-         * ---io模型---
-         */
-        private IoStrategy ioStrategy;
+        /*---io模型---*/
+        private IoStrategy ioStrategy = IoStrategy.NIO;
         /**
          * {@link IoStrategy#NIO_MULTI}下有效.
          */
