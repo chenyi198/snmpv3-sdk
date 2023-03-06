@@ -11,10 +11,8 @@
 **基于udp的snmp协议IO模型设计**
 
 * 一对一：SnmpSession，创建时绑定本地udp端和接收端，一个session就是一个逻辑链路，连接两端.
-* 一对多：SnmpSender + NioUdpTransportMapping，一个本地udp端向多个远端发收数据，本地与远端建立多条逻辑udp-channel，
-所有channel注册到一个多路复用器上，单IO线程轮询.
-* 多对多: SnmpSender + NioUdpMultiTransportMapping，本地起用多个多路复用器，并分别分配一个独立线程来轮询其选择器，
-每个channel创建时会选择一个selector选择器来注册，这样就可同时监听更大批量channel的IO事件，设计参考`Netty#NioEventLoop`.
+* 多对多: upd-channel NIO模式，SnmpSender + NioTransportMapping，本地起用多个多路复用器，并分别分配一个独立线程来轮询其选择器，
+每个channel创建时会选择一个selector选择器来注册，这样就可同时监听大批量channel的IO事件，设计参考`Netty#NioEventLoop`.
 
 **线程模型**
 
@@ -36,4 +34,26 @@
 > * 多对多——读操作线程池-解码线程池：1个IO线程池 + 1个编解码线程池
 
 ##### 3、使用示例
-> *见测试用例*
+> *详见测试用例([SnmpSenderTest](src/test/java/io/snmp/sdk/core/sender/SnmpSenderTest.java))*
+```java
+SnmpSender snmpSender = SnmpSender.builder()
+                .ioStrategy(IoStrategy.NIO)             //NIO策略
+                .multi(1)                               //IO线程组线程个数（决定起多少selector选择器）
+                .workerPool("snmp-msg-process-pool",   //后置异步解码线程池
+                        1, 3,
+                        Duration.ofSeconds(60),
+                        1024
+                )
+                .retry(0)                               //失败重试次数
+                .reqTimeoutMills(800)                   //请求超时时长
+                .nonRepeaters(0)                        //PDU#nonRepeaters,保持默认0
+                .maxRepetitions(24)                     //PDU#maxRepetitions
+                .usmUser(Arrays.asList(                 //snmpV3 USM认证账户信息注册
+                        new UsmUserEntry("udp:192.168.1.1/161",
+                                "user0",
+                                UsmEncryptionEnum.SHA, "123456789",
+                                UsmEncryptionEnum.AES128, "123456789"
+                        ))
+                )
+                .build();
+```
