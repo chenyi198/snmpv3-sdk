@@ -1,6 +1,5 @@
 package io.snmp.sdk.core.sender;
 
-import io.snmp.sdk.core.sender.transport.NioUdpMultiTransportMapping;
 import io.snmp.sdk.core.sender.transport.NioUdpTransportMapping;
 import io.snmp.sdk.core.support.Assert;
 import io.snmp.sdk.core.support.JdkThreadPool;
@@ -14,6 +13,7 @@ import org.snmp4j.MessageDispatcher;
 import org.snmp4j.PDU;
 import org.snmp4j.ScopedPDU;
 import org.snmp4j.Snmp;
+import org.snmp4j.TransportMapping;
 import org.snmp4j.UserTarget;
 import org.snmp4j.event.ResponseEvent;
 import org.snmp4j.event.ResponseListener;
@@ -27,7 +27,6 @@ import org.snmp4j.smi.OctetString;
 import org.snmp4j.smi.UdpAddress;
 import org.snmp4j.smi.VariableBinding;
 import org.snmp4j.transport.DefaultUdpTransportMapping;
-import org.snmp4j.transport.UdpTransportMapping;
 import org.snmp4j.util.MultiThreadedMessageDispatcher;
 import org.snmp4j.util.WorkerPool;
 
@@ -120,20 +119,17 @@ public class SnmpSender extends SnmpV3Base {
         registerUsmUser(builder.usmUser);
     }
 
-    private UdpTransportMapping transport;
+    private TransportMapping<UdpAddress> transport;
 
     private void init0() {
 
         try {
             switch (ioStrategy) {
-                case SINGLE_LISTEN:
+                case DEFAULT_LISTEN:
                     transport = new DefaultUdpTransportMapping(localAddress);
                     break;
                 case NIO:
-                    transport = new NioUdpTransportMapping(localAddress);
-                    break;
-                case NIO_MULTI:
-                    transport = new NioUdpMultiTransportMapping(multi, localAddress);
+                    transport = new NioUdpTransportMapping(multi, localAddress);
                     break;
                 default:
                     throw new SnmpRuntimeException("args error: 'ioStrategy'.");
@@ -371,9 +367,9 @@ public class SnmpSender extends SnmpV3Base {
         /*---io模型---*/
         private IoStrategy ioStrategy = IoStrategy.NIO;
         /**
-         * {@link IoStrategy#NIO_MULTI}下有效.
+         * {@link IoStrategy#NIO}下有效.
          */
-        private int multi = 0;
+        private int multi = 1;
 
         /*---udp请求控制---*/
         private int reqTimeoutMills = 3000;
@@ -408,6 +404,7 @@ public class SnmpSender extends SnmpV3Base {
         }
 
         public SnmpSenderBuilder multi(int multi) {
+            Assert.isTrue(multi > 0, "Arg 'multi' must > 0!");
             this.multi = multi;
             return this;
         }

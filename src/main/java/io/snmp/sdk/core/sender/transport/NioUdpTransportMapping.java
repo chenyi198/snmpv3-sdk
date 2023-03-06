@@ -1,16 +1,16 @@
 package io.snmp.sdk.core.sender.transport;
 
-import org.snmp4j.SNMP4JSettings;
+import io.snmp.sdk.core.support.exception.SnmpRuntimeException;
+import lombok.extern.slf4j.Slf4j;
 import org.snmp4j.TransportStateReference;
 import org.snmp4j.security.SecurityLevel;
+import org.snmp4j.smi.Address;
 import org.snmp4j.smi.UdpAddress;
-import org.snmp4j.transport.DefaultUdpTransportMapping;
-import org.snmp4j.util.WorkerTask;
+import org.snmp4j.transport.AbstractTransportMapping;
 
 import java.io.IOException;
 import java.net.DatagramSocket;
 import java.net.InetSocketAddress;
-import java.net.SocketException;
 import java.nio.ByteBuffer;
 import java.nio.channels.DatagramChannel;
 import java.nio.channels.SelectionKey;
@@ -21,54 +21,67 @@ import java.util.List;
 import java.util.Map;
 import java.util.Set;
 import java.util.concurrent.ConcurrentHashMap;
+import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.locks.ReentrantLock;
+import java.util.function.Function;
 
 /**
- * 多路复用通信模型实现——1*多路复用器.
+ * 多路复用通信模型实现——n*多路复用器.
  *
- * <p>覆写{@link DefaultUdpTransportMapping}核心方法，转用多路复用NIO模型.</p>
- * <p>在1个多路复用器里轮询所有udp-channel：将所有channel注册到一个多路复用器上，适用于channel链路较小的情况(<1000).</p>
+ * <p>实现{@link AbstractTransportMapping}核心方法，转用多路复用NIO模型.</p>
+ * <p>n个多路复用器轮询多个udp-channel：将多个channel均衡地注册到n个多路复用器上.</p>
  *
  * @author ssp
  * @since 1.0
  */
-public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
+@Slf4j
+public class NioUdpTransportMapping extends AbstractTransportMapping<UdpAddress> {
 
-    private NioListenThread listenerThread;
+    private NioListenThreadGroup listenerThreadGroup;
+
+    private int multi = 1;
+    private String nioPoolName = "nio-snmp-multi-transport";
 
     private final InetSocketAddress localBindAddress;
+
+    private boolean reuseAddress = true;
 
     /**
      * remote-channel.
      */
-    private Map<UdpAddress, DatagramChannel> channelsTable = new ConcurrentHashMap<>();
-
+    private Map<UdpAddress, DatagramChannel> channelTable = new ConcurrentHashMap<>();
 
     public NioUdpTransportMapping() throws IOException {
         localBindAddress = new InetSocketAddress(0);
     }
 
+    public NioUdpTransportMapping(int multi) throws IOException {
+        this.multi = multi;
+        localBindAddress = new InetSocketAddress(0);
+    }
 
-    public NioUdpTransportMapping(UdpAddress udpAddress, boolean reuseAddress) throws IOException {
-        super(udpAddress, reuseAddress);
+    public NioUdpTransportMapping(UdpAddress udpAddress, boolean reuseAddress, int multi) throws IOException {
+        this.reuseAddress = reuseAddress;
+        this.multi = multi;
         localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
     }
 
-    public NioUdpTransportMapping(UdpAddress udpAddress) throws IOException {
-        super(udpAddress);
+    public NioUdpTransportMapping(int multi, UdpAddress udpAddress) throws IOException {
+        this.multi = multi;
         localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
     }
 
     @Override
     public synchronized void listen() throws IOException {
-        if (listener != null) {
-            throw new SocketException("Port already listening");
+        if (listenerThreadGroup != null) {
+            throw new SnmpRuntimeException("Listener treadGroup already created!");
         }
-        listenerThread = new NioListenThread();
+        listenerThreadGroup = new NioListenThreadGroup(multi, nioPoolName);
+    }
 
-        listener = SNMP4JSettings.getThreadFactory().createWorkerThread(
-                "nio-snmp-single-transport", listenerThread, true);
-        listener.run();
+    @Override
+    public boolean isListening() {
+        return false;
     }
 
     @Override
@@ -81,46 +94,68 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
         s.send(ByteBuffer.wrap(message), targetSocketAddress);
     }
 
-
     private DatagramChannel ensureSocket(UdpAddress targetAddress) {
-
-        return channelsTable.computeIfAbsent(targetAddress, udpAddress -> {
-            try {
-                final DatagramChannel datagramChannel = DatagramChannel.open();
-
-                //设置非阻塞模式
-                datagramChannel.configureBlocking(false);
-                datagramChannel.socket().setReuseAddress(true);
-                datagramChannel.bind(localBindAddress);
-
-                //TODO socket读写缓冲区设置
-
-                datagramChannel.connect(new InetSocketAddress(
-                        udpAddress.getInetAddress().getHostAddress(),
-                        udpAddress.getPort()));
-
-                listenerThread.register(datagramChannel);
-
-                return datagramChannel;
-            } catch (IOException e) {
-                e.printStackTrace();
-            }
-            return null;
-        });
+        return channelTable.computeIfAbsent(targetAddress, channelBuilder);
     }
 
-    class NioListenThread implements WorkerTask {
+    final Function<UdpAddress, DatagramChannel> channelBuilder = targetAddress -> {
+        try {
+            final DatagramChannel datagramChannel = DatagramChannel.open();
+
+            //设置非阻塞模式
+            datagramChannel.configureBlocking(false);
+            datagramChannel.socket().setReuseAddress(reuseAddress);
+            datagramChannel.bind(NioUdpTransportMapping.this.localBindAddress);
+
+            datagramChannel.connect(new InetSocketAddress(
+                    targetAddress.getInetAddress().getHostAddress(),
+                    targetAddress.getPort()));
+
+            //注册到selector线程.
+            listenerThreadGroup.register(datagramChannel);
+
+            return datagramChannel;
+        } catch (IOException e) {
+            e.printStackTrace();
+        }
+        return null;
+    };
+
+    @Override
+    public Class<? extends Address> getSupportedAddressClass() {
+        return UdpAddress.class;
+    }
+
+    @Override
+    public UdpAddress getListenAddress() {
+        throw new UnsupportedOperationException("Unsupported!");
+    }
+
+    @Override
+    public void close() {
+        listenerThreadGroup.shutdownGracefully();
+    }
+
+
+    class NioListenThread extends Thread {
+
 
         private final Selector selector;
 
         private volatile boolean running = true;
 
+        /**
+         * registerTasks.
+         * <p>
+         * Protected by putLock.
+         */
         private List<Runnable> registerTasks = new LinkedList<>();
 
         private final ReentrantLock putLock = new ReentrantLock();
 
 
-        public NioListenThread() throws IOException {
+        public NioListenThread(String threadName) throws IOException {
+            super(threadName);
             selector = Selector.open();
         }
 
@@ -134,25 +169,33 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
 
                     Iterator<SelectionKey> itr = keys.iterator();
                     while (itr.hasNext()) {
-                        SelectionKey fd = itr.next();
-                        itr.remove();
+                        try {
+                            SelectionKey fd = itr.next();
+                            itr.remove();
 
-                        if (fd.isValid() && fd.isReadable()) {
+                            if (fd.isValid()) {
+                                if (fd.isReadable()) {
+                                    DatagramChannel sc = (DatagramChannel) fd.channel();
+                                    final DatagramSocket socket = sc.socket();
 
-                            DatagramChannel sc = (DatagramChannel) fd.channel();
-                            final DatagramSocket socket = sc.socket();
+                                    //TODO 读缓冲区大小设定.
+                                    ByteBuffer bis = ByteBuffer.allocate(getMaxInboundMessageSize());
+                                    sc.read(bis);
+                                    bis.flip();
 
-                            ByteBuffer bis = ByteBuffer.allocate(getMaxInboundMessageSize());
-                            sc.read(bis);
-                            bis.flip();
-
-                            final InetSocketAddress localAddress = (InetSocketAddress) (sc.getLocalAddress());
-                            TransportStateReference stateReference =
-                                    new TransportStateReference(NioUdpTransportMapping.this, new UdpAddress(localAddress.getAddress(), localAddress.getPort()), null,
-                                            SecurityLevel.undefined, SecurityLevel.undefined,
-                                            false, socket);
-                            fireProcessMessage(new UdpAddress(socket.getInetAddress(),
-                                    socket.getPort()), bis, stateReference);
+                                    final InetSocketAddress localAddress = (InetSocketAddress) (sc.getLocalAddress());
+                                    TransportStateReference stateReference =
+                                            new TransportStateReference(NioUdpTransportMapping.this, new UdpAddress(localAddress.getAddress(), localAddress.getPort()), null,
+                                                    SecurityLevel.undefined, SecurityLevel.undefined,
+                                                    false, socket);
+                                    fireProcessMessage(new UdpAddress(socket.getInetAddress(),
+                                            socket.getPort()), bis, stateReference);
+                                }
+                            } else {
+                                fd.cancel();
+                            }
+                        } catch (IOException e) {
+                            log.warn("Do channel io exception: {}", e.getMessage());
                         }
                     }
 
@@ -167,26 +210,25 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
                     }
 
                 } catch (Exception e) {
-                    e.printStackTrace();
+                    log.error("Do select or io exception!", e);
                 }
 
             } while (running);
 
+            try {
+                selector.close();
+            } catch (IOException e) {
+                //ignore
+            }
+            log.info("shutdown [{}] success.", getName());
         }
 
-        @Override
-        public void terminate() {
+        private void notifySelector() {
+            selector.wakeup();
+        }
+
+        public void shutdown() {
             running = false;
-        }
-
-        @Override
-        public void join() throws InterruptedException {
-
-        }
-
-        @Override
-        public void interrupt() {
-            terminate();
         }
 
         public void register(DatagramChannel datagramChannel) {
@@ -200,11 +242,60 @@ public class NioUdpTransportMapping extends DefaultUdpTransportMapping {
                         e.printStackTrace();
                     }
                 });
-                selector.wakeup();
+                notifySelector();
             } finally {
                 putLock.unlock();
             }
         }
 
     }
+
+    class NioListenThreadGroup {
+
+
+        private final NioListenThread[] threadPool;
+
+        private final int multi;
+
+        private final String poolName;
+
+        public NioListenThreadGroup(int multi, String poolName) throws IOException {
+            this.multi = multi;
+            this.threadPool = new NioListenThread[multi];
+            this.poolName = poolName;
+            createPool();
+        }
+
+        private void createPool() throws IOException {
+            for (int i = 0; i < multi; i++) {
+                final NioListenThread thread = new NioListenThread(generateTName(i));
+                threadPool[i] = thread;
+                thread.start();
+            }
+        }
+
+        private String generateTName(int i) {
+            return poolName + "-" + i;
+        }
+
+        public void register(DatagramChannel datagramChannel) {
+            final NioListenThread nextThread = next();
+            nextThread.register(datagramChannel);
+        }
+
+        /*均衡注册channel*/
+        private final AtomicInteger nextIdx = new AtomicInteger();
+
+        private NioListenThread next() {
+            return threadPool[Math.abs(nextIdx.getAndIncrement() % multi)];
+        }
+
+        public void shutdownGracefully() {
+            for (NioListenThread nioListenThread : threadPool) {
+                nioListenThread.shutdown();
+            }
+        }
+
+    }
+
 }

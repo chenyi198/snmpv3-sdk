@@ -25,15 +25,15 @@ public class SnmpSenderTest {
     public void before() throws ClassNotFoundException, InterruptedException {
 
         snmpSender = SnmpSender.builder()
-                .ioStrategy(IoStrategy.NIO_MULTI)
-                .multi(3)
+                .ioStrategy(IoStrategy.NIO)
+                .multi(1)
                 .workerPool("snmp-msg-process-pool1",
                         1, 3,
                         Duration.ofSeconds(60),
                         1024
                 )
                 .retry(0)
-                .reqTimeoutMills(200)
+                .reqTimeoutMills(800)
                 .nonRepeaters(0)
                 .maxRepetitions(24)
                 .usmUser(Arrays.asList(
@@ -47,7 +47,7 @@ public class SnmpSenderTest {
 
         remoteTargetAddress = "udp:192.168.1.1/161";
 
-        TimeUnit.MILLISECONDS.sleep(2000);
+        TimeUnit.MILLISECONDS.sleep(600);
     }
 
     @Test
@@ -61,7 +61,6 @@ public class SnmpSenderTest {
         bindings.forEach(var -> {
             log.info("var: {}", var);
         });
-
 
     }
 
