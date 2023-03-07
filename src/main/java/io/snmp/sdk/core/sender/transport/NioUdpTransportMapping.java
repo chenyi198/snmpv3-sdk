@@ -51,22 +51,22 @@ public class NioUdpTransportMapping extends AbstractTransportMapping<UdpAddress>
      */
     private Map<UdpAddress, DatagramChannel> channelTable = new ConcurrentHashMap<>();
 
-    public NioUdpTransportMapping() throws IOException {
+    public NioUdpTransportMapping() {
         localBindAddress = new InetSocketAddress(0);
     }
 
-    public NioUdpTransportMapping(int multi) throws IOException {
+    public NioUdpTransportMapping(int multi) {
         this.multi = multi;
         localBindAddress = new InetSocketAddress(0);
     }
 
-    public NioUdpTransportMapping(UdpAddress udpAddress, boolean reuseAddress, int multi) throws IOException {
+    public NioUdpTransportMapping(UdpAddress udpAddress, boolean reuseAddress, int multi) {
         this.reuseAddress = reuseAddress;
         this.multi = multi;
         localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
     }
 
-    public NioUdpTransportMapping(int multi, UdpAddress udpAddress) throws IOException {
+    public NioUdpTransportMapping(int multi, UdpAddress udpAddress) {
         this.multi = multi;
         localBindAddress = new InetSocketAddress(udpAddress.getInetAddress().getHostAddress(), 0);
     }
@@ -81,17 +81,14 @@ public class NioUdpTransportMapping extends AbstractTransportMapping<UdpAddress>
 
     @Override
     public boolean isListening() {
-        return false;
+        return listenerThreadGroup == null;
     }
 
     @Override
     public void sendMessage(UdpAddress targetAddress, byte[] message, TransportStateReference tmStateReference) throws IOException {
-        InetSocketAddress targetSocketAddress =
-                new InetSocketAddress(targetAddress.getInetAddress(),
-                        targetAddress.getPort());
         //TODO 异步化，提交写任务到IO线程
         DatagramChannel s = ensureSocket(targetAddress);
-        s.send(ByteBuffer.wrap(message), targetSocketAddress);
+        s.write(ByteBuffer.wrap(message));
     }
 
     private DatagramChannel ensureSocket(UdpAddress targetAddress) {
@@ -105,7 +102,7 @@ public class NioUdpTransportMapping extends AbstractTransportMapping<UdpAddress>
             //设置非阻塞模式
             datagramChannel.configureBlocking(false);
             datagramChannel.socket().setReuseAddress(reuseAddress);
-            datagramChannel.bind(NioUdpTransportMapping.this.localBindAddress);
+            datagramChannel.bind(NioUdpTransportMapping.this.localBindAddress); //设置绑定某一网卡接口，udp端口随机.
 
             datagramChannel.connect(new InetSocketAddress(
                     targetAddress.getInetAddress().getHostAddress(),
@@ -115,8 +112,8 @@ public class NioUdpTransportMapping extends AbstractTransportMapping<UdpAddress>
             listenerThreadGroup.register(datagramChannel);
 
             return datagramChannel;
-        } catch (IOException e) {
-            e.printStackTrace();
+        } catch (Exception e) {
+            log.error("Channel open exception!", e);
         }
         return null;
     };

@@ -3,7 +3,7 @@
 - [x]  SnmpV3 `priv-auth`双重账户验证模式
 - [x] SnmpV3协议消息收发模块
   - [x] SnmpSession
-  - [x] SnmpSender(主要实现)
+  - [x] SnmpSender(NIO)
   
 ##### 2、采用的线程模型及IO模型
 *snmp协议采用UDP通信，UDP是TCP/IP协议栈传输层无连接协议，基于socket，可实行多路复用*
